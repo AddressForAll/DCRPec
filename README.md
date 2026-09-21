@@ -15,10 +15,19 @@ A compactação tem como ponto de partida o CEP (neste git convertido para **CRP
 
 Caso | tipo | percentual
 -----|------|--------
-C3 | LOGRADOURO | ~97,1%
-C2 | LOCALIDADE | ~0,6%
+C3 | LOCALIDADE | ~0,6%
+C2 | LOGRADOURO | ~97,1%
 C1 | GRANDE_USUARIO | ~1,4%
 C1 | UNIDADE_OPERACIONAL | ~0,8%
 C1 | CPC - Caixa Postal do Correio | 0,13%
 
-<img width="1288" height="786" alt="Captura de tela de 2026-09-20 11-50-04" src="https://github.com/user-attachments/assets/c344f79b-036a-4c4b-bea1-90775ddd4015" />
+<img width="1287" height="750" alt="Captura de tela de 2026-09-21 09-28-01" src="https://github.com/user-attachments/assets/37302cc4-f498-4e58-b792-6a7ad86febd2" />
+
+Resumindo o que seria o processo de compactação, dos dois lados, DNE e endereço postal original:
+* *"Rua Planalto 4, 15 • Alto da Lagonhinha, Capistrano - CE"* **=** "`BR-CE-Capistrano`, `AltoLagonhinha`, `R_Planalto4`, `15`" <br/>"CEP 62748-000"  **=** `BR-CE-Capistrano`<br/> Portanto o CEP substituí `BR-CE-Capistrano` e fica `AltoLagonhinha-R_Planalto4~15`.
+* *"Avenida Braz Leme, 2000 • Santana, São Paulo - SP"* **=** `BR-SP-SaoPaulo`, `Santana`, `Av_BrazLeme`, `2000`<br/>"CEP 62748-000" **=** "`BR-SP-SaoPaulo`, `Santana`, `Av_BrazLeme`"<br/> Portanto o CEP substituí `BR-SP-SaoPaulo-Santana-Av_BrazLeme` e fica a numeração predial como `~2000`.
+
+As funções de compactação, na pasta [`/src`](./src), garantem strings DNE padronizadas, mas as diferentes fontes de endereços, tais como OpenStreetMap, CNEFE e Prefeituras, nem sempre seguem o mesmo padrão, de modo que a canonização exige um recurso a mais que é a tabela de sinônimos. Exemplos termos sinônimos canizados, *sinônimo*→*canônico*:
+
+* *"Rua planalto Quatro"* **→** *"Rua Planalto 4"*
+* ...
