@@ -1433,3 +1433,354 @@ CREATE INDEX idx_cep_string_compacta ON public.cep_string_padronizada (string_co
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+////////////////////////////// EXEMPLO DE ENDERECOS - Rodar em demogov ///////////////////////////////////
+
+-- Cria extension
+CREATE EXTENSION IF NOT EXISTS dblink;
+
+-- Criar o schema cnefe2022
+CREATE SCHEMA IF NOT EXISTS cnefe2022;
+
+
+
+
+-- Cria uma tabela com os endereços completos distintos (Versão Otimizada) : Início --
+
+    -- 1. Cria o índice composto incluindo a coluna modificadora na origem (demogov)
+    SELECT dblink_exec(
+        'dbname=demogov',
+        'CREATE INDEX IF NOT EXISTS idx_ibge_cnefe2022_enderecos_full 
+         ON public.ibge_cnefe2022 (cep,nom_tipo_seglogr, nom_titulo_seglogr, nom_seglogr, num_endereco, dsc_modificador) 
+         WHERE num_endereco <> ''0'';'
+    );
+    
+    -- 2. Puxa os dados com agrupamento otimizado
+    DROP TABLE IF EXISTS cnefe2022.enderecos_completos_distintos;
+    CREATE TABLE cnefe2022.enderecos_completos_distintos AS -- Roda em 3 minutos
+    SELECT
+        cep,
+        nom_tipo_seglogr,
+        nom_titulo_seglogr,
+        nom_seglogr,
+        num_endereco,
+        CASE 
+            WHEN dsc_modificador IN ('A', 'B', 'C') THEN dsc_modificador 
+            ELSE NULL 
+        END AS dsc_modificador
+    FROM dblink(
+        'dbname=demogov',
+        'SELECT
+             cep,
+             nom_tipo_seglogr, 
+             nom_titulo_seglogr, 
+             nom_seglogr, 
+             num_endereco,
+             dsc_modificador
+         FROM public.ibge_cnefe2022 
+         WHERE num_endereco <> ''0''
+         GROUP BY
+             cep,
+             nom_tipo_seglogr, 
+             nom_titulo_seglogr, 
+             nom_seglogr, 
+             num_endereco, 
+             dsc_modificador'
+    ) AS t(
+        cep TEXT,
+        nom_tipo_seglogr TEXT,
+        nom_titulo_seglogr TEXT,
+        nom_seglogr TEXT,
+        num_endereco TEXT,
+        dsc_modificador TEXT
+    );
+    
+    -- 3. Remove o índice temporário do banco de origem (demogov)
+    SELECT dblink_exec(
+        'dbname=demogov',
+        'DROP INDEX IF EXISTS public.idx_ibge_cnefe2022_enderecos_full;'
+    );
+
+-- Cria uma tabela com os endereços completos distintos : Fim --
+
+-- Cria índices na tabela base local para acelerar o DISTINCT e o agrupamento
+CREATE INDEX IF NOT EXISTS idx_base_tipo_seglogr ON cnefe2022.enderecos_completos_distintos (nom_tipo_seglogr);
+CREATE INDEX IF NOT EXISTS idx_base_titulo_seglogr ON cnefe2022.enderecos_completos_distintos (nom_titulo_seglogr);
+CREATE INDEX IF NOT EXISTS idx_base_seglogr ON cnefe2022.enderecos_completos_distintos (nom_seglogr);
+
+-- Analisa a tabela para atualizar as estatísticas do planejador do PostgreSQL
+ANALYZE cnefe2022.enderecos_completos_distintos;
+
+-- Criar tabela para os tipos de logradouro
+DROP MATERIALIZED VIEW IF EXISTS cnefe2022.tipo_seglogr;
+CREATE MATERIALIZED VIEW IF NOT EXISTS cnefe2022.tipo_seglogr AS
+SELECT DISTINCT 
+    nom_tipo_seglogr,
+    COALESCE(
+        shrink_logradouro_tipo(nom_tipo_seglogr),
+        endereco_to_camel_correios(nom_tipo_seglogr, False)
+    ) AS nom_tipo_seglogr_strcompacta
+FROM cnefe2022.enderecos_completos_distintos
+WHERE nom_tipo_seglogr IS NOT NULL;
+
+-- Criar tabela para os títulos de logradouro
+DROP MATERIALIZED VIEW IF EXISTS cnefe2022.titulo_seglogr;
+CREATE MATERIALIZED VIEW IF NOT EXISTS cnefe2022.titulo_seglogr AS
+SELECT DISTINCT 
+    nom_titulo_seglogr,
+    COALESCE(
+        shrink_logradouro_titulo(nom_titulo_seglogr),
+        endereco_to_camel_correios(nom_titulo_seglogr, False)
+    ) AS nom_titulo_seglogr_strcompacta
+FROM cnefe2022.enderecos_completos_distintos
+WHERE nom_titulo_seglogr IS NOT NULL;
+
+-- Criar tabela para os nomes de logradouro usando dblink
+DROP MATERIALIZED VIEW IF EXISTS cnefe2022.seglogr;
+CREATE MATERIALIZED VIEW IF NOT EXISTS cnefe2022.seglogr AS
+SELECT DISTINCT 
+    nom_seglogr,
+    endereco_to_camel_correios(nom_seglogr, False) AS nom_seglogr_strcompacta
+FROM cnefe2022.enderecos_completos_distintos
+WHERE nom_seglogr IS NOT NULL;
+
+-- Obtem nomes únicos e suas respectivas versões de string compacta
+DROP MATERIALIZED VIEW IF EXISTS cnefe2022.logradouros_combinados_compactados;
+CREATE MATERIALIZED VIEW cnefe2022.logradouros_combinados_compactados AS
+SELECT 
+    t.nom_tipo_seglogr,
+    tp.nom_tipo_seglogr_strcompacta,
+    t.nom_titulo_seglogr,
+    tt.nom_titulo_seglogr_strcompacta,
+    t.nom_seglogr,
+    s.nom_seglogr_strcompacta
+FROM (
+    SELECT 
+        nom_tipo_seglogr,
+        nom_titulo_seglogr,
+        nom_seglogr
+    FROM cnefe2022.enderecos_completos_distintos
+    GROUP BY 
+        nom_tipo_seglogr,
+        nom_titulo_seglogr,
+        nom_seglogr
+) t
+LEFT JOIN cnefe2022.tipo_seglogr tp 
+    ON t.nom_tipo_seglogr = tp.nom_tipo_seglogr
+LEFT JOIN cnefe2022.titulo_seglogr tt 
+    ON t.nom_titulo_seglogr = tt.nom_titulo_seglogr
+LEFT JOIN cnefe2022.seglogr s 
+    ON t.nom_seglogr = s.nom_seglogr;
+
+
+-- Cria tabela cep string padronizada
+DROP MATERIALIZED VIEW IF EXISTS public.cep_string_padronizada_cnefe;
+CREATE MATERIALIZED VIEW IF NOT EXISTS public.cep_string_padronizada_cnefe AS
+SELECT 
+    -- 1. endereco_postal (Com normalização para remover qualquer espaço duplo)
+    REGEXP_REPLACE(
+        TRIM(BOTH FROM (
+            COALESCE(INITCAP(NULLIF(BTRIM(c.nom_tipo_seglogr), '')), '') || ' ' || 
+            COALESCE(INITCAP(NULLIF(BTRIM(c.nom_titulo_seglogr), '')), '') || ' ' || 
+            COALESCE(INITCAP(NULLIF(BTRIM(c.nom_seglogr), '')), '') ||
+            -- Número e Modificador colados (ex: 6C)
+            CASE 
+                WHEN NULLIF(BTRIM(c.num_endereco), '') IS NOT NULL AND NULLIF(BTRIM(c.dsc_modificador), '') IS NOT NULL 
+                THEN ', ' || c.num_endereco || UPPER(TRIM(c.dsc_modificador))
+                WHEN NULLIF(BTRIM(c.num_endereco), '') IS NOT NULL 
+                THEN ', ' || c.num_endereco
+                ELSE '' 
+            END ||
+            -- Bairro separado por '•'
+            CASE WHEN NULLIF(BTRIM(cu.bairro), '') IS NOT NULL THEN ' • ' || cu.bairro ELSE '' END ||
+            CASE WHEN NULLIF(BTRIM(j.name), '') IS NOT NULL THEN ', ' || j.name ELSE '' END ||
+            CASE WHEN NULLIF(BTRIM(SPLIT_PART(j.isolabel_ext, '-', 2)), '') IS NOT NULL THEN '/' || SPLIT_PART(j.isolabel_ext, '-', 2) ELSE '' END ||
+            ', CEP ' || "left"(c.cep, 5) || '-' || "right"(c.cep, 3)
+        )),
+        '\s+', ' ' , 'g'
+    ) AS endereco_postal,
+
+    -- 2. string_compacta
+    (
+        SUBSTRING(j.isolabel_ext FROM 4) || '-' || 
+        COALESCE(tp.nom_tipo_seglogr_strcompacta, '') ||
+        CASE WHEN NULLIF(BTRIM(tt.nom_titulo_seglogr_strcompacta), '') IS NOT NULL THEN '_' || tt.nom_titulo_seglogr_strcompacta ELSE '' END ||
+        '_' || COALESCE(s.nom_seglogr_strcompacta, '') ||
+        CASE 
+            WHEN NULLIF(BTRIM(c.num_endereco), '') IS NOT NULL 
+            THEN '~' || REGEXP_REPLACE(c.num_endereco, '^\s*([0-9]+[ABC]?).*', '\1') || 
+                 COALESCE(UPPER(NULLIF(BTRIM(c.dsc_modificador), '')), '')
+            ELSE '' 
+        END
+    ) AS string_compacta,
+
+    -- 3. caso 
+    'C1'::text AS caso,
+
+    -- 4. tipo_falta
+    'C1-geral'::text AS tipo_falta,
+
+    -- 5. cep_bruto
+    c.cep AS cep_bruto
+
+FROM cnefe2022.enderecos_completos_distintos c
+LEFT JOIN cep_unificado cu ON btrim(c.cep::text) = btrim(cu.cep::text)
+LEFT JOIN imported.jurisdiction j ON cu.municipio_cod_ibge::bigint = j.cod_ibge::bigint
+LEFT JOIN cnefe2022.tipo_seglogr tp ON c.nom_tipo_seglogr = tp.nom_tipo_seglogr
+LEFT JOIN cnefe2022.titulo_seglogr tt ON c.nom_titulo_seglogr = tt.nom_titulo_seglogr
+LEFT JOIN cnefe2022.seglogr s ON c.nom_seglogr = s.nom_seglogr;
+
+
+
+
+-- Remove índices após processamento
+DROP INDEX IF EXISTS idx_base_tipo_seglogr;
+DROP INDEX IF EXISTS idx_base_titulo_seglogr;
+DROP INDEX IF EXISTS idx_base_seglogr;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+DROP VIEW IF EXISTS public.cnefe_enderecos_processados_exemplo;
+
+CREATE VIEW public.cnefe_enderecos_processados_exemplo AS
+SELECT 
+    cep,
+    
+    -- Bairro / Localidade
+    NULLIF(BTRIM(dsc_localidade), '') AS bairro,
+    
+    -- {{tipo_logradouro}}
+    NULLIF(BTRIM(nom_tipo_seglogr), '') AS tipo_logradouro,
+    
+    -- {{tituloenomelogradouro}} (Título + Nome juntos, blindado contra espaços duplos)
+    NULLIF(
+        REGEXP_REPLACE(
+            TRIM(COALESCE(nom_titulo_seglogr, '') || ' ' || COALESCE(nom_seglogr, '')),
+            '\s+', ' ', 'g'
+        ),
+        ''
+    ) AS tituloenomelogradouro,
+    
+    -- Logradouro completo padrão (Tipo + Título + Nome)
+    NULLIF(
+        REGEXP_REPLACE(
+            TRIM(COALESCE(nom_tipo_seglogr, '') || ' ' || COALESCE(nom_titulo_seglogr, '') || ' ' || COALESCE(nom_seglogr, '')),
+            '\s+', ' ', 'g'
+        ),
+        ''
+    ) AS logradouro,
+    
+    -- {{numeroemodificador}} padrão para o endereço postal (ex: 100-A ou apenas 100 se o modificador for nulo)
+    NULLIF(
+        BTRIM(num_endereco) || 
+        CASE 
+            WHEN NULLIF(BTRIM(dsc_modificador), '') IS NOT NULL THEN '-' || BTRIM(dsc_modificador)
+            ELSE '' 
+        END,
+        ''
+    ) AS numeroemodificador,
+    
+    -- {{numeroemodificador_compacto}} específico para a string compacta (ex: 100_A ou apenas 100 se o modificador for nulo)
+    NULLIF(
+        BTRIM(num_endereco) || 
+        CASE 
+            WHEN NULLIF(BTRIM(dsc_modificador), '') IS NOT NULL THEN '_' || BTRIM(dsc_modificador)
+            ELSE '' 
+        END,
+        ''
+    ) AS numeroemodificador_compacto
+
+FROM public.ibge_cnefe2022
+WHERE cod_municipio = '4316907'
+  AND num_endereco IS NOT NULL
+  AND num_endereco <> '0'
+GROUP BY cod_municipio,
+         cep,
+         dsc_localidade,
+         nom_tipo_seglogr,
+         nom_titulo_seglogr,
+         nom_seglogr,
+         num_endereco,
+         dsc_modificador;
+
+-- Criando índice para performance nos cruzamentos futuros
+CREATE INDEX idx_cnefe_proc_cep ON public.cnefe_enderecos_processados (cep);
+
+
