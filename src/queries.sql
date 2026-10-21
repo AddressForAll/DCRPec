@@ -274,6 +274,9 @@ BEGIN
         v_resultado := CASE WHEN v_resultado = '' THEN v_resto ELSE v_resultado || '_' || v_resto END;
     END IF;
 
+    -- Substitui barra por ponto
+    v_resultado := replace(v_resultado, '/', '.');
+
     RETURN v_resultado;
 END;
 $$;
